@@ -175,6 +175,12 @@ export async function getAdminAuth(): Promise<{ personId: string; passwordHash: 
   }
 }
 
+// ==================== Email 索引 ====================
+
+import { putEmailIndex as levelPutEmail, getPersonIdByEmail as levelGetEmail } from "./leveldb";
+
+export { putEmailIndex, getPersonIdByEmail } from "./leveldb";
+
 // ==================== Guest 查询 ====================
 
 export { listGuestNodesByActivity };

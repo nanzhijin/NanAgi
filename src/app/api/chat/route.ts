@@ -20,9 +20,20 @@ import "@/agent/tools";
 
 // ==================== 记忆上下文 (保留现有逻辑) ====================
 
-async function buildMemoryContext(): Promise<string> {
+async function buildMemoryContext(personId: string, role: string): Promise<string> {
   try {
-    const memories = await listMemories();
+    // admin: 读取所有历史记忆 (文件系统 + LevelDB)
+    // guest: 只读取该用户自己的记忆 (LevelDB, 按 personId 过滤)
+    // admin: 读取所有历史记忆 / guest: 只读自己的
+    const rawMemories = role === "admin"
+      ? await listMemories()
+      : await (await import("@/lib/store")).listMemories(personId);
+
+    const memories = rawMemories.map((m) => ({
+      meta: { type: m.meta.type, description: m.meta.description },
+      content: m.content,
+    }));
+
     if (memories.length === 0) return "";
 
     const labels: Record<string, string> = {
@@ -81,13 +92,11 @@ export async function POST(request: NextRequest) {
   const token = await getAuthCookie();
   if (!token) return new Response("Unauthorized", { status: 401 });
 
-  const { valid, role } = await verifyToken(token);
-  if (!valid) return new Response("Token expired", { status: 401 });
+  const jwt = await verifyToken(token);
+  if (!jwt.valid) return new Response("Token expired", { status: 401 });
 
-  // P3: personId + name + identity 从 JWT 中提取
-  const personId = role === "admin" ? "nanzhijin" : (request.headers.get("x-nanagi-person-id") || "guest");
-  const name = role === "admin" ? "南志锦" : "客人";
-  const identity = role === "admin" ? "主人" : "面试官";
+  // P3: personId + name + identity 直接从 JWT 读取
+  const { personId, role, name, identity } = jwt;
 
   // 2. 环境感知
   const ambient = await getAmbient(request);
@@ -96,7 +105,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const { messages = [], project } = body;
 
-  const memoryContext = await buildMemoryContext();
+  const memoryContext = await buildMemoryContext(personId, role);
 
   const ctx: AgentContext = {
     personId,

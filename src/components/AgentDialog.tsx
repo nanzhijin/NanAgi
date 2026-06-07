@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useChat } from "@/contexts/ChatContext";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
+import AuthForm from "./AuthForm";
 
 // Full-screen central dialog for the home page
 export default function AgentDialog() {
@@ -52,16 +53,11 @@ export default function AgentDialog() {
               ◆ NaNaGi
             </div>
             <p className="text-sm leading-relaxed">
-              欢迎光临～我是NaNaGi，主人的专属女仆 ✨{"\n\n"}请输入面试密码，让我来招待您。
+              欢迎光临～我是NaNaGi，主人的专属女仆 ✨{"\n\n"}登录或注册，让我来招待您。
             </p>
           </div>
 
-          <ChatInput
-            onSend={login}
-            disabled={loginLoading}
-            placeholder="输入面试密码..."
-            isPassword
-          />
+          <AuthForm onLogin={login} loading={loginLoading} />
 
           {loginError && (
             <p className="text-accent text-xs mt-3 font-bold tracking-wider">

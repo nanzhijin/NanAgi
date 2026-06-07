@@ -1,11 +1,26 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getMemory, deleteMemory } from "@/lib/memory";
+import { getAuthCookie, verifyToken } from "@/lib/auth";
+
+async function getRole(request: NextRequest): Promise<string> {
+  const role = request.headers.get("x-nanagi-role") || "guest";
+  const token = await getAuthCookie();
+  if (token) {
+    const jwt = await verifyToken(token);
+    if (jwt.valid) return jwt.role;
+  }
+  return role;
+}
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   try {
+    const role = await getRole(request);
+    if (role !== "admin") {
+      return NextResponse.json({ error: "仅管理员可查看" }, { status: 403 });
+    }
     const { slug } = await params;
     const entry = await getMemory(slug);
     if (!entry) {
@@ -19,10 +34,14 @@ export async function GET(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   try {
+    const role = await getRole(request);
+    if (role !== "admin") {
+      return NextResponse.json({ error: "仅管理员可删除" }, { status: 403 });
+    }
     const { slug } = await params;
     const ok = await deleteMemory(slug);
     if (!ok) {

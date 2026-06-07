@@ -1,11 +1,12 @@
 // ============================================================
-// NaNaGi Agent 工具 — save_memory (原 create_memory)
+// NaNaGi Agent 工具 — save_memory
 // 主动保存记忆 — NaNaGi 判断"这个值得记"时自主调用
+// admin → 文件系统 / guest → LevelDB
 // ============================================================
 
 import { registerTool } from "../registry";
-import type { ToolResult } from "../types";
-import { createMemory } from "@/lib/memory";
+import type { ToolResult, AgentContext } from "../types";
+import { createMemory as fsCreateMemory } from "@/lib/memory";
 import type { MemoryType } from "@/lib/memory";
 
 registerTool({
@@ -41,25 +42,45 @@ registerTool({
     },
   },
 
-  async execute(args): Promise<ToolResult> {
+  async execute(args, ctx: AgentContext): Promise<ToolResult> {
     const memType = args.memory_type as string;
     const desc = args.description as string;
     const memContent = args.content as string;
     const tags = args.tags
       ? (args.tags as string).split(",").map((s) => s.trim()).filter(Boolean)
       : [];
+    const ts = new Date().toISOString();
 
     try {
-      const slug = `mem-${Date.now()}`;
-      await createMemory(
-        {
-          name: slug,
-          description: desc,
-          type: memType as MemoryType,
-          tags: tags.length > 0 ? tags : undefined,
-        },
-        memContent
-      );
+      // admin → 文件系统 / guest → LevelDB
+      if (ctx.role !== "admin") {
+        const store = await import("@/lib/store");
+        await store.createMemory({
+          slug: `mem-${Date.now()}`,
+          personId: ctx.personId,
+          meta: {
+            name: `mem-${Date.now()}`,
+            description: desc,
+            type: memType as MemoryType,
+            tags: tags.length > 0 ? tags : [],
+            createdAt: ts,
+          },
+          content: memContent,
+          summary: desc,
+          keywords: tags,
+        });
+      } else {
+        const slug = `mem-${Date.now()}`;
+        await fsCreateMemory(
+          {
+            name: slug,
+            description: desc,
+            type: memType as MemoryType,
+            tags: tags.length > 0 ? tags : undefined,
+          },
+          memContent
+        );
+      }
 
       return {
         tool_call_id: "",
@@ -68,7 +89,7 @@ registerTool({
     } catch (err) {
       return {
         tool_call_id: "",
-        content: `记忆保存失败: ${err instanceof Error ? err.message : String(err)}。请检查 data/memory/ 目录是否可写。`,
+        content: `记忆保存失败: ${err instanceof Error ? err.message : String(err)}。`,
         is_error: true,
       };
     }

@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import bcrypt from "bcryptjs";
 import { getPasswordHashes, getJwtSecret, getNodeEnv } from "@/lib/env";
 
-export type UserRole = "guest" | "admin";
+export type UserRole = "guest" | "admin" | "guest-iv";
 
 const SECRET = getJwtSecret();
 const COOKIE_NAME = "nanagi_token";
@@ -25,23 +25,44 @@ export function verifyPassword(password: string): { valid: boolean; role: UserRo
 
 // ==================== JWT ====================
 
-export async function createToken(role: UserRole): Promise<string> {
-  return new SignJWT({ sub: "nanagi_user", role })
+export interface TokenPayload {
+  personId: string;
+  role: UserRole;
+  name: string;
+  identity: string;
+}
+
+export async function createToken(
+  personId: string,
+  role: UserRole,
+  name: string,
+  identity: string
+): Promise<string> {
+  return new SignJWT({ sub: "nanagi_user", role, personId, name, identity })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(EXPIRES_IN)
     .sign(SECRET);
 }
 
-export async function verifyToken(token: string): Promise<{ valid: boolean; role: UserRole }> {
+export async function verifyToken(token: string): Promise<{ valid: boolean } & TokenPayload> {
   try {
     const { payload } = await jwtVerify(token, SECRET);
     return {
       valid: true,
+      personId: (payload.personId as string) || payload.role as string,
       role: (payload.role as UserRole) || "guest",
+      name: (payload.name as string) || "客人",
+      identity: (payload.identity as string) || "面试官",
     };
   } catch {
-    return { valid: false, role: "guest" };
+    return {
+      valid: false,
+      personId: "guest",
+      role: "guest",
+      name: "客人",
+      identity: "面试官",
+    };
   }
 }
 

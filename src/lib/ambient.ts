@@ -206,11 +206,34 @@ async function getWeather(location: LocationSnapshot | null): Promise<WeatherSna
 
 // ==================== 统一入口 ====================
 
+// ==================== 全查询节制 (24h) ====================
+// 时间每次必拿 (<1ms, 零成本)
+// 地点+天气每天只查一次 — 减少 ip-api + 和风 API 调用
+
+interface FullQueryCache {
+  timestamp: number;
+  location: LocationSnapshot | null;
+  weather: WeatherSnapshot | null;
+}
+
+let fullQueryCache: FullQueryCache | null = null;
+const FULL_QUERY_GAP_MS = 24 * 60 * 60 * 1000; // 24 小时
+
 /** 获取环境快照 — route.ts 每次请求调一次 */
 export async function getAmbient(request: NextRequest): Promise<AmbientSnapshot> {
   const time = getTimeContext();
+  const now = Date.now();
+
+  // 24h 内有全查询记录 → 复用缓存, 跳过外部 API
+  if (fullQueryCache && (now - fullQueryCache.timestamp) < FULL_QUERY_GAP_MS) {
+    return { time, location: fullQueryCache.location, weather: fullQueryCache.weather };
+  }
+
+  // 超过 24h → 执行全查询
   const location = await getLocation(request);
   const weather = await getWeather(location);
+
+  fullQueryCache = { timestamp: now, location, weather };
 
   return { time, location, weather };
 }

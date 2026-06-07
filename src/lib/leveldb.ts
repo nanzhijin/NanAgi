@@ -1,109 +1,72 @@
 // ============================================================
-// NaNaGi K-V 存储引擎 — P2-2
-// 文件系统 K-V (Turbopack不兼容classic-level原生模块)
-// 接口可替换: 未来换真实LevelDB只需改此文件
+// NaNaGi K-V 存储引擎 — P2-2 (v2: 用户子目录隔离)
+// 文件系统 K-V, 接口可替换为真实 LevelDB
 // 六表命名空间: user / iwm / mem / emo / conv / feedback
+// 目录结构:
+//   data/leveldb/{personId}/   ← 每人独立目录
+//   data/leveldb/_index/       ← 全局索引
 // ============================================================
 
 import fs from "fs/promises";
 import path from "path";
 import { existsSync } from "fs";
 
-// ==================== 初始化 ====================
-
 const DB_DIR = path.join(process.cwd(), "data", "leveldb");
+const INDEX_DIR = path.join(DB_DIR, "_index");
 
-async function ensureDir(): Promise<void> {
-  if (!existsSync(DB_DIR)) {
-    await fs.mkdir(DB_DIR, { recursive: true });
-  }
+async function ensureDir(dir: string): Promise<void> {
+  if (!existsSync(dir)) await fs.mkdir(dir, { recursive: true });
 }
 
-/** 生成合法的文件名 key */
-function safeKey(key: string): string {
-  return key.replace(/[^a-zA-Z0-9_:.-]/g, "_");
+async function userDir(personId: string): Promise<string> {
+  const dir = path.join(DB_DIR, personId);
+  await ensureDir(dir);
+  return dir;
 }
 
-function keyPath(key: string): string {
-  return path.join(DB_DIR, safeKey(key) + ".json");
-}
-
-// ==================== 通用 CRUD ====================
-
-export async function dbPut(key: string, value: Record<string, unknown>): Promise<void> {
-  await ensureDir();
-  await fs.writeFile(keyPath(key), JSON.stringify(value), "utf-8");
-}
-
-export async function dbGet<T = Record<string, unknown>>(key: string): Promise<T | null> {
+async function readJSON<T>(filePath: string): Promise<T | null> {
   try {
-    const raw = await fs.readFile(keyPath(key), "utf-8");
-    return JSON.parse(raw) as T;
+    return JSON.parse(await fs.readFile(filePath, "utf-8")) as T;
   } catch {
     return null;
   }
 }
 
+async function writeJSON(filePath: string, data: unknown): Promise<void> {
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+// ==================== 全局扫描 ====================
+
+/** 列出所有 guest 用户 personId */
+async function listPersonIds(): Promise<string[]> {
+  await ensureDir(DB_DIR);
+  const entries = await fs.readdir(DB_DIR, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isDirectory() && e.name.startsWith("guest-"))
+    .map((e) => e.name);
+}
+
+// ==================== 通用 Key-Value ====================
+
+export async function dbPut(key: string, value: Record<string, unknown>): Promise<void> {
+  await ensureDir(DB_DIR);
+  await writeJSON(path.join(DB_DIR, `${key}.json`), value);
+}
+
+export async function dbGet<T = Record<string, unknown>>(key: string): Promise<T | null> {
+  return readJSON<T>(path.join(DB_DIR, `${key}.json`));
+}
+
 export async function dbDelete(key: string): Promise<void> {
-  try {
-    await fs.unlink(keyPath(key));
-  } catch {
-    // 文件不存在 → 忽略
-  }
+  try { await fs.unlink(path.join(DB_DIR, `${key}.json`)); } catch { /* ignore */ }
 }
-
-/** 按前缀扫描 */
-export async function dbScan<T = Record<string, unknown>>(
-  prefix: string,
-  cb: (key: string, value: T) => void | Promise<void>
-): Promise<void> {
-  await ensureDir();
-  const files = await fs.readdir(DB_DIR);
-  const safePfx = safeKey(prefix);
-
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const rawKey = file.replace(/\.json$/, "");
-
-    // 逆向 safeKey 做前缀匹配 (近似)
-    if (!rawKey.startsWith(safePfx)) continue;
-
-    try {
-      const raw = await fs.readFile(path.join(DB_DIR, file), "utf-8");
-      const value = JSON.parse(raw) as T;
-      await cb(rawKey, value);
-    } catch {
-      // 损坏文件跳过
-    }
-  }
-}
-
-/** 按前缀获取所有值列表 */
-export async function dbList<T = Record<string, unknown>>(prefix: string): Promise<T[]> {
-  const results: T[] = [];
-  await dbScan<T>(prefix, (_, value) => {
-    results.push(value);
-  });
-  return results;
-}
-
-// ==================== Key 命名空间 ====================
-
-const NS = {
-  user: (personId: string) => `user:${personId}`,
-  iwm: (personId: string) => `iwm:${personId}`,
-  mem: (personId: string, ts: string) => `mem:${personId}:${ts}`,
-  emo: (personId: string, ts: string) => `emo:${personId}:${ts}`,
-  conv: (personId: string, cellId: string) => `conv:${personId}:${cellId}`,
-  convCells: (personId: string) => `conv:${personId}:cells`,
-  convLastSummary: (personId: string) => `conv:${personId}:last-summary`,
-  feedback: (personId: string) => `feedback:${personId}`,
-} as const;
 
 // ==================== 用户 — Table 1 ====================
 
 export interface UserRecord {
   personId: string;
+  email: string;
   name: string;
   passwordHash: string;
   role: "guest-iv" | "guest";
@@ -117,11 +80,36 @@ export interface UserRecord {
 }
 
 export async function putUserRecord(record: UserRecord): Promise<void> {
-  await dbPut(NS.user(record.personId), record as unknown as Record<string, unknown>);
+  const dir = await userDir(record.personId);
+  await writeJSON(path.join(dir, "user.json"), record);
 }
 
 export async function getUserRecord(personId: string): Promise<UserRecord | null> {
-  return dbGet<UserRecord>(NS.user(personId));
+  return readJSON<UserRecord>(path.join(DB_DIR, personId, "user.json"));
+}
+
+// ==================== Email 索引 ====================
+
+async function emailIndexDir(): Promise<string> {
+  const dir = path.join(INDEX_DIR, "email");
+  await ensureDir(dir);
+  return dir;
+}
+
+function emailKey(email: string): string {
+  return email.toLowerCase().replace(/[@.]/g, "_");
+}
+
+export async function putEmailIndex(email: string, personId: string): Promise<void> {
+  const dir = await emailIndexDir();
+  await writeJSON(path.join(dir, `${emailKey(email)}.json`), { email, personId });
+}
+
+export async function getPersonIdByEmail(email: string): Promise<string | null> {
+  const data = await readJSON<{ personId: string }>(
+    path.join(INDEX_DIR, "email", `${emailKey(email)}.json`)
+  );
+  return data?.personId || null;
 }
 
 // ==================== IWM Node — Table 2 ====================
@@ -146,11 +134,12 @@ export interface IWMNode {
 }
 
 export async function putIWMNode(node: IWMNode): Promise<void> {
-  await dbPut(NS.iwm(node.personId), node as unknown as Record<string, unknown>);
+  const dir = await userDir(node.personId);
+  await writeJSON(path.join(dir, "iwm.json"), node);
 }
 
 export async function getIWMNode(personId: string): Promise<IWMNode | null> {
-  return dbGet<IWMNode>(NS.iwm(personId));
+  return readJSON<IWMNode>(path.join(DB_DIR, personId, "iwm.json"));
 }
 
 // ==================== 记忆 — Table 3 ====================
@@ -171,12 +160,25 @@ export interface MemoryRecord {
 }
 
 export async function putMemoryRecord(record: MemoryRecord): Promise<void> {
+  const dir = await userDir(record.personId);
   const ts = record.meta.createdAt || new Date().toISOString();
-  await dbPut(NS.mem(record.personId, ts), record as unknown as Record<string, unknown>);
+  await ensureDir(path.join(dir, "memories"));
+  const safeTs = ts.replace(/[:]/g, "-");
+  await writeJSON(path.join(dir, "memories", `${safeTs}.json`), record);
 }
 
 export async function listMemoryRecords(personId: string): Promise<MemoryRecord[]> {
-  return dbList<MemoryRecord>(NS.mem(personId, ""));
+  const memDir = path.join(DB_DIR, personId, "memories");
+  if (!existsSync(memDir)) return [];
+  const files = await fs.readdir(memDir);
+  const records: MemoryRecord[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const r = await readJSON<MemoryRecord>(path.join(memDir, file));
+    if (r) records.push(r);
+  }
+  records.sort((a, b) => (b.meta.createdAt || "").localeCompare(a.meta.createdAt || ""));
+  return records;
 }
 
 // ==================== 情绪轨迹 — Table 4 ====================
@@ -192,7 +194,9 @@ export interface EmotionEntry {
 }
 
 export async function putEmotionEntry(entry: EmotionEntry): Promise<void> {
-  await dbPut(NS.emo(entry.personId, entry.timestamp), entry as unknown as Record<string, unknown>);
+  const dir = await userDir(entry.personId);
+  await ensureDir(path.join(dir, "emotions"));
+  await writeJSON(path.join(dir, "emotions", `${entry.timestamp.replace(/[:]/g, "-")}.json`), entry);
 }
 
 // ==================== Cell 会话 — Table 5 ====================
@@ -210,35 +214,38 @@ export interface CellRecord {
 }
 
 export async function putCellRecord(record: CellRecord): Promise<void> {
-  await dbPut(NS.conv(record.personId, record.cellId), record as unknown as Record<string, unknown>);
-  // 维护 cell 列表索引
-  const cells = await dbGet<string[]>(NS.convCells(record.personId)) || [];
-  if (!cells.includes(record.cellId)) {
-    cells.push(record.cellId);
-    await dbPut(NS.convCells(record.personId), cells as unknown as Record<string, unknown>);
+  const dir = await userDir(record.personId);
+  await ensureDir(path.join(dir, "cells"));
+  await writeJSON(path.join(dir, "cells", `${record.cellId}.json`), record);
+  // 维护 cell 索引
+  const idx = await readJSON<string[]>(path.join(dir, "cells", "_index.json")) || [];
+  if (!idx.includes(record.cellId)) {
+    idx.push(record.cellId);
+    await writeJSON(path.join(dir, "cells", "_index.json"), idx);
   }
 }
 
 export async function getCellRecord(personId: string, cellId: string): Promise<CellRecord | null> {
-  return dbGet<CellRecord>(NS.conv(personId, cellId));
+  return readJSON<CellRecord>(path.join(DB_DIR, personId, "cells", `${cellId}.json`));
 }
 
 export async function listCellRecords(personId: string): Promise<CellRecord[]> {
-  const cellIds = await dbGet<string[]>(NS.convCells(personId)) || [];
+  const idx = await readJSON<string[]>(path.join(DB_DIR, personId, "cells", "_index.json")) || [];
   const cells: CellRecord[] = [];
-  for (const cid of cellIds) {
-    const cell = await dbGet<CellRecord>(NS.conv(personId, cid));
+  for (const cid of idx) {
+    const cell = await readJSON<CellRecord>(path.join(DB_DIR, personId, "cells", `${cid}.json`));
     if (cell) cells.push(cell);
   }
   return cells;
 }
 
 export async function putLastSummary(personId: string, summary: string): Promise<void> {
-  await dbPut(NS.convLastSummary(personId), { summary } as unknown as Record<string, unknown>);
+  const dir = await userDir(personId);
+  await writeJSON(path.join(dir, "last-summary.json"), { summary, updatedAt: new Date().toISOString() });
 }
 
 export async function getLastSummary(personId: string): Promise<string | null> {
-  const data = await dbGet<{ summary: string }>(NS.convLastSummary(personId));
+  const data = await readJSON<{ summary: string }>(path.join(DB_DIR, personId, "last-summary.json"));
   return data?.summary || null;
 }
 
@@ -261,11 +268,12 @@ export interface FeedbackRecord {
 }
 
 export async function putFeedbackRecord(record: FeedbackRecord): Promise<void> {
-  await dbPut(NS.feedback(record.personId), record as unknown as Record<string, unknown>);
+  const dir = await userDir(record.personId);
+  await writeJSON(path.join(dir, "feedback.json"), record);
 }
 
 export async function getFeedbackRecord(personId: string): Promise<FeedbackRecord | null> {
-  return dbGet<FeedbackRecord>(NS.feedback(personId));
+  return readJSON<FeedbackRecord>(path.join(DB_DIR, personId, "feedback.json"));
 }
 
 // ==================== 全局查询 ====================
@@ -277,19 +285,18 @@ export async function listGuestNodesByActivity(
 ): Promise<{ personId: string; name: string; identity: string; lastTalk: string; totalTurns: number }[]> {
   const cutoff = Date.now() - daysBack * 24 * 60 * 60 * 1000;
   const results: { personId: string; name: string; identity: string; lastTalk: string; totalTurns: number }[] = [];
+  const ids = await listPersonIds();
 
-  await dbScan<IWMNode>("iwm:", (key, node) => {
-    if (node.role === "admin") return;
-    if (identity && node.identity !== identity) return;
-    if (new Date(node.lastTalk).getTime() < cutoff) return;
+  for (const personId of ids) {
+    const node = await getIWMNode(personId);
+    if (!node) continue;
+    if (identity && node.identity !== identity) continue;
+    if (new Date(node.lastTalk).getTime() < cutoff) continue;
     results.push({
-      personId: node.personId,
-      name: node.name,
-      identity: node.identity,
-      lastTalk: node.lastTalk,
-      totalTurns: node.totalTurns,
+      personId: node.personId, name: node.name, identity: node.identity,
+      lastTalk: node.lastTalk, totalTurns: node.totalTurns,
     });
-  });
+  }
 
   results.sort((a, b) => new Date(b.lastTalk).getTime() - new Date(a.lastTalk).getTime());
   return results;

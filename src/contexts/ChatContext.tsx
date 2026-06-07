@@ -28,7 +28,7 @@ interface ChatContextType {
   checking: boolean;
   loginError: string;
   loginLoading: boolean;
-  login: (password: string) => Promise<void>;
+  login: (personId: string | null, password: string, name?: string, identity?: string, email?: string, code?: string) => Promise<void>;
 
   // Chat
   messages: Message[];
@@ -135,26 +135,57 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       .finally(() => setChecking(false));
   }, []);
 
-  // —— Login ——
-  const login = useCallback(async (password: string) => {
-    setLoginLoading(true);
-    setLoginError("");
+  // —— Login / Register ——
+  const login = useCallback(
+    async (personId: string | null, password: string, name?: string, identity?: string, email?: string, code?: string) => {
+      setLoginLoading(true);
+      setLoginError("");
 
-    try {
-      const res = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
+      // 注册
+      if (!personId && name && identity && email) {
+        try {
+          const res = await fetch("/api/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, name, identity, password, code }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setIsAuthenticated(true);
+            setUserRole(data.role || "guest");
+            setMessages([]);
+          } else {
+            const data = await res.json().catch(() => ({}));
+            setLoginError(data.error || "注册失败");
+          }
+        } catch {
+          setLoginError("连接失败，请稍后重试");
+        } finally {
+          setLoginLoading(false);
+        }
+        return;
+      }
 
-      if (res.ok) {
-        const data = await res.json();
-        setIsAuthenticated(true);
-        setUserRole(data.role || "guest");
-        setMessages([]);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setLoginError(data.error || "密码错误");
+      // 登录
+      try {
+        const res = await fetch("/api/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            personId: personId || undefined,
+            email: email || undefined,
+            password,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setIsAuthenticated(true);
+          setUserRole(data.role || "guest");
+          setMessages([]);
+        } else {
+          const data = await res.json().catch(() => ({}));
+          setLoginError(data.error || "密码错误");
       }
     } catch {
       setLoginError("连接失败，请稍后重试");
